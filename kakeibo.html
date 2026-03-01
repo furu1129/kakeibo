@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="家計簿">
+<title>家計簿</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { background: #0D0D12; color: #E4DFD6; font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; }
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+  select { -webkit-appearance: none; appearance: none; }
+  ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: #2C2C3E; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } = Recharts;
+
+const C = {
+  bg:"#0D0D12", surf:"#13131B", surf2:"#1A1A24",
+  border:"#21212E", border2:"#2C2C3E",
+  gold:"#C9BA7D", goldBg:"#C9BA7D18",
+  text:"#E4DFD6", sub:"#64607A", mute:"#35334A",
+  red:"#D05E5E", redBg:"#D05E5E18",
+  r:10, r2:6,
+};
+
+const CAT = {
+  食料品:{color:"#E8735A",icon:"🛒"}, 外食:{color:"#E8A25A",icon:"🍜"},
+  交通:{color:"#5A9BE8",icon:"🚃"}, 住居:{color:"#7EBF6E",icon:"🏠"},
+  光熱費:{color:"#5AD4C8",icon:"⚡"}, 通信:{color:"#8B5AE8",icon:"📱"},
+  日用品:{color:"#5AE8A2",icon:"🧴"}, 医療:{color:"#E85AA2",icon:"💊"},
+  美容:{color:"#D45AC8",icon:"💄"}, 衣服:{color:"#B45AE8",icon:"👗"},
+  娯楽:{color:"#D4C85A",icon:"🎮"}, サブスク:{color:"#5A7EE8",icon:"📺"},
+  旅行:{color:"#E8C45A",icon:"✈️"}, 教育:{color:"#5AE870",icon:"📚"},
+  その他:{color:"#64607A",icon:"📦"},
+};
+
+const LS = {
+  get: k => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):null; } catch{ return null; } },
+  set: (k,v) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch(_){} },
+  del: k => { try { localStorage.removeItem(k); } catch(_){} },
+};
+
+const GIST_FILE = "kakeibo_data.json";
+const gistGet = async (token, id) => {
+  const r = await fetch(`https://api.github.com/gists/${id}`, { headers:{ Authorization:`token ${token}`, Accept:"application/vnd.github.v3+json" } });
+  if(!r.ok) throw new Error(`取得失敗(${r.status})`);
+  const d = await r.json();
+  const c = d.files?.[GIST_FILE]?.content;
+  if(!c) throw new Error("データなし");
+  return JSON.parse(c);
+};
+const gistPut = async (token, id, payload) => {
+  const r = await fetch(`https://api.github.com/gists/${id}`, { method:"PATCH", headers:{ Authorization:`token ${token}`, "Content-Type":"application/json" }, body:JSON.stringify({ files:{ [GIST_FILE]:{ content:JSON.stringify(payload) } } }) });
+  if(!r.ok) throw new Error(`保存失敗(${r.status})`);
+};
+const gistCreate = async token => {
+  const r = await fetch("https://api.github.com/gists", { method:"POST", headers:{ Authorization:`token ${token}`, "Content-Type":"application/json" }, body:JSON.stringify({ description:"家計簿データ", public:false, files:{ [GIST_FILE]:{ content:JSON.stringify({ transactions:[], imports:[], fixedItems:[], version:1 }) } } }) });
+  if(!r.ok) throw new Error(`作成失敗(${r.status})`);
+  return (await r.json()).id;
+};
+
+const Card = ({children,style}) => <div style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:C.r,padding:20,...style}}>{children}</div>;
+const SL = ({children,style}) => <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:C.sub,marginBottom:12,...style}}>{children}</div>;
+const HR = () => <div style={{borderBottom:`1px solid ${C.border}`}}/>;
+const Btn = ({children,variant="primary",size="md",onClick,disabled,style}) => {
+  const pad = size==="sm"?"5px 13px":size==="lg"?"12px 28px":"9px 20px", fs=size==="sm"?12:13;
+  const v = {primary:{bg:C.gold,color:C.bg,border:"none"},ghost:{bg:"transparent",color:C.sub,border:`1px solid ${C.border}`},danger:{bg:C.redBg,color:C.red,border:`1px solid ${C.red}55`},dangerFill:{bg:C.red,color:"#fff",border:"none"}}[variant];
+  return <button onClick={onClick} disabled={disabled} style={{padding:pad,fontSize:fs,fontWeight:600,borderRadius:C.r2,background:v.bg,color:v.color,border:v.border,cursor:disabled?"not-allowed":"pointer",opacity:disabled?0.4:1,whiteSpace:"nowrap",...style}}>{children}</button>;
+};
+const Chip = ({children,active,color,onClick,dashed}) => <button onClick={onClick} style={{padding:"5px 14px",borderRadius:99,fontSize:12,cursor:"pointer",fontWeight:active?600:400,border:dashed?`1px dashed ${C.border2}`:`1px solid ${active?(color||C.gold):C.border}`,background:active?((color||C.gold)+"22"):"transparent",color:active?(color||C.gold):C.sub}}>{children}</button>;
+const TI = ({style,...props}) => <input style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:C.r2,color:C.text,padding:"8px 12px",fontSize:13,width:"100%",boxSizing:"border-box",outline:"none",...style}} {...props}/>;
+
+function Kakeibo() {
+  const [transactions,setTransactions]       = useState([]);
+  const [imports,setImports]                 = useState([]);
+  const [fixedItems,setFixedItems]           = useState([]);
+  const [loading,setLoading]                 = useState(true);
+  const [tab,setTab]                         = useState("dashboard");
+  const [uploadText,setUploadText]           = useState("");
+  const [pendingFileName,setPendingFileName] = useState("手動入力");
+  const [importCardName,setImportCardName]   = useState("");
+  const [importMonth,setImportMonth]         = useState("");
+  const [analyzing,setAnalyzing]             = useState(false);
+  const [analysisLog,setAnalysisLog]         = useState("");
+  const [filterMonth,setFilterMonth]         = useState("");
+  const [filterCategory,setFilterCategory]   = useState("");
+  const [dragOver,setDragOver]               = useState(false);
+  const [pendingPdf,setPendingPdf]           = useState(null);
+  const [editingImportId,setEditingImportId] = useState(null);
+  const [editingLabel,setEditingLabel]       = useState("");
+  const [addingCard,setAddingCard]           = useState(false);
+  const [newCardInput,setNewCardInput]       = useState("");
+  const [confirmDeleteAll,setConfirmDeleteAll] = useState(false);
+  const [confirmImportId,setConfirmImportId] = useState(null);
+  const [showFixedForm,setShowFixedForm]     = useState(false);
+  const [editingFixed,setEditingFixed]       = useState(null);
+  const [fixedForm,setFixedForm]             = useState({name:"",amount:"",category:"住居",day:"27",memo:""});
+  const [fixedRegMonth,setFixedRegMonth]     = useState(()=>new Date().toISOString().slice(0,7));
+  const [fixedAmtOvr,setFixedAmtOvr]         = useState({});
+  const [fixedRegConfirm,setFixedRegConfirm] = useState(false);
+  const [fixedSelIds,setFixedSelIds]         = useState([]);
+  const [advice,setAdvice]                   = useState(null);
+  const [adviceLoading,setAdviceLoading]     = useState(false);
+  const [gistToken,setGistToken]             = useState("");
+  const [gistId,setGistId]                   = useState("");
+  const [gistTokenInput,setGistTokenInput]   = useState("");
+  const [syncing,setSyncing]                 = useState(false);
+  const [syncStatus,setSyncStatus]           = useState("");
+  const [syncMsg,setSyncMsg]                 = useState("");
+  const [lastSynced,setLastSynced]           = useState(null);
+  const [apiKey,setApiKey]                   = useState("");
+  const [apiKeyInput,setApiKeyInput]         = useState("");
+  const fileRef = useRef(), importRef = useRef();
+
+  useEffect(()=>{
+    const tx=LS.get("kk_tx"); if(tx) setTransactions(tx);
+    const im=LS.get("kk_im"); if(im) setImports(im);
+    const fx=LS.get("kk_fx"); if(fx) setFixedItems(fx);
+    const gt=LS.get("kk_gt"); if(gt) setGistToken(gt);
+    const gi=LS.get("kk_gi"); if(gi) setGistId(gi);
+    const ak=LS.get("kk_ak"); if(ak) setApiKey(ak);
+    setLoading(false);
+  },[]);
+
+  useEffect(()=>{ setFixedSelIds(fixedItems.map(f=>f.id)); },[fixedItems.length]);
+
+  const saveTx = d => { setTransactions(d); LS.set("kk_tx",d); };
+  const saveIm = d => { setImports(d);      LS.set("kk_im",d); };
+  const saveFx = d => { setFixedItems(d);   LS.set("kk_fx",d); };
+
+  const syncUp = async (tx,im,fx,tok,gid) => {
+    if(!tok||!gid) return;
+    try {
+      await gistPut(tok,gid,{transactions:tx,imports:im,fixedItems:fx,version:1,updatedAt:new Date().toISOString()});
+      setLastSynced(new Date()); setSyncStatus("ok"); setSyncMsg("同期完了");
+      setTimeout(()=>setSyncStatus(""),3000);
+    } catch(e){ setSyncStatus("error"); setSyncMsg(e.message); }
+  };
+
+  const pullGist = async () => {
+    if(!gistToken||!gistId) return;
+    setSyncing(true); setSyncMsg("取得中...");
+    try {
+      const d = await gistGet(gistToken,gistId);
+      saveTx(d.transactions||[]); saveIm(d.imports||[]); saveFx(d.fixedItems||[]);
+      setLastSynced(new Date()); setSyncStatus("ok"); setSyncMsg(`✅ 取得完了(${(d.transactions||[]).length}件)`);
+    } catch(e){ setSyncStatus("error"); setSyncMsg(`❌ ${e.message}`); }
+    setSyncing(false);
+  };
+
+  const setupGist = async () => {
+    const tok = gistTokenInput.trim(); if(!tok) return;
+    setSyncing(true); setSyncMsg("Gistを作成中...");
+    try {
+      const id = await gistCreate(tok);
+      setGistToken(tok); setGistId(id); LS.set("kk_gt",tok); LS.set("kk_gi",id);
+      await gistPut(tok,id,{transactions,imports,fixedItems,version:1,updatedAt:new Date().toISOString()});
+      setGistTokenInput(""); setLastSynced(new Date()); setSyncStatus("ok"); setSyncMsg("✅ Gist同期を設定しました！");
+    } catch(e){ setSyncStatus("error"); setSyncMsg(`❌ ${e.message}`); }
+    setSyncing(false);
+  };
+
+  const disconnectGist = () => { setGistToken(""); setGistId(""); LS.del("kk_gt"); LS.del("kk_gi"); setSyncStatus(""); setSyncMsg(""); setLastSynced(null); };
+
+  const saveApiKey = () => { setApiKey(apiKeyInput.trim()); LS.set("kk_ak",apiKeyInput.trim()); setApiKeyInput(""); };
+
+  const delImport = async id => { const t=transactions.filter(tx=>tx.importId!==id),i=imports.filter(im=>im.id!==id); saveTx(t); saveIm(i); await syncUp(t,i,fixedItems,gistToken,gistId); };
+  const delAll    = async () => { if(!confirmDeleteAll){setConfirmDeleteAll(true);return;} saveTx([]); saveIm([]); await syncUp([],[],fixedItems,gistToken,gistId); setConfirmDeleteAll(false); };
+  const delOne    = async id => { const d=transactions.filter(t=>t.id!==id); saveTx(d); await syncUp(d,imports,fixedItems,gistToken,gistId); };
+  const editCat   = async (id,c) => { const d=transactions.map(t=>t.id===id?{...t,category:c}:t); saveTx(d); await syncUp(d,imports,fixedItems,gistToken,gistId); };
+  const saveLabel = async id => { const d=imports.map(i=>i.id===id?{...i,label:editingLabel}:i); saveIm(d); await syncUp(transactions,d,fixedItems,gistToken,gistId); setEditingImportId(null); };
+
+  const submitFixed = async () => {
+    if(!fixedForm.name.trim()||!fixedForm.amount) return;
+    let d;
+    if(editingFixed){ d=fixedItems.map(f=>f.id===editingFixed?{...f,...fixedForm,amount:parseInt(fixedForm.amount)}:f); setEditingFixed(null); }
+    else { d=[...fixedItems,{id:`fixed_${Date.now()}`,...fixedForm,amount:parseInt(fixedForm.amount)}]; }
+    saveFx(d); await syncUp(transactions,imports,d,gistToken,gistId);
+    setFixedForm({name:"",amount:"",category:"住居",day:"27",memo:""}); setShowFixedForm(false);
+  };
+  const delFixed = async id => { const d=fixedItems.filter(f=>f.id!==id); saveFx(d); await syncUp(transactions,imports,d,gistToken,gistId); };
+
+  const regFixed = async ids => {
+    const newTx=ids.map(id=>{ const f=fixedItems.find(fi=>fi.id===id); if(!f)return null; const amt=fixedAmtOvr[id]?parseInt(fixedAmtOvr[id]):f.amount; return {id:`fixed_${id}_${fixedRegMonth}_${Date.now()}`,date:`${fixedRegMonth}-${String(f.day).padStart(2,"0")}`,description:f.name,amount:amt,category:f.category,memo:f.memo||"口座振替",importId:`fixed_${fixedRegMonth}`}; }).filter(Boolean);
+    if(!newTx.length) return 0;
+    const d=[...transactions,...newTx].sort((a,b)=>b.date.localeCompare(a.date));
+    saveTx(d); await syncUp(d,imports,fixedItems,gistToken,gistId); setFixedAmtOvr({}); return newTx.length;
+  };
+
+  const exportData = () => {
+    const blob=new Blob([JSON.stringify({transactions,imports,fixedItems,exportedAt:new Date().toISOString(),version:1},null,2)],{type:"application/json"});
+    const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:`kakeibo_${new Date().toISOString().slice(0,10)}.json`});
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+  const importData = file => {
+    const reader=new FileReader(); reader.onload=async e=>{
+      try { const d=JSON.parse(e.target.result); if(!d.transactions)throw new Error("形式エラー"); saveTx(d.transactions||[]); saveIm(d.imports||[]); saveFx(d.fixedItems||[]); await syncUp(d.transactions||[],d.imports||[],d.fixedItems||[],gistToken,gistId); alert(`✅ インポート完了(${d.transactions.length}件)`); }
+      catch(e){ alert(`❌ ${e.message}`); }
+    }; reader.readAsText(file);
+  };
+
+  const getApiKey = () => apiKey || prompt("Claude APIキーを入力してください（sk-ant-...）") || "";
+
+  const RULES=[
+    [/エナジー|エネルギー|東京ガス|東電|関西電力|中部電力|九州電力|東北電力|北海道電力|四国電力|中国電力|北陸電力|HTB|CDエナジー/i,"光熱費"],
+    [/ドコモ|NTT|au|ソフトバンク|楽天モバイル|OCN|BIGLOBE|IIJ|UQ|ワイモバイル|povo|ahamo/i,"通信"],
+    [/U-NEXT|Netflix|Spotify|Apple.*iTunes|OPENAI|ChatGPT|Amazon.*Prime|Hulu|Disney|Adobe|Microsoft.*365|Google.*One/i,"サブスク"],
+    [/LUUP|タクシー|ガソリン|駐車|ENEOS|出光|コスモ|エネオス|JAL|ANA|新幹線|高速|ETC/i,"交通"],
+    [/WOLT|Wolt|Uber.*Eats|出前館|スターバックス|Starbucks|マクドナルド|McDonald|ケンタッキー|吉野家|すき家|松屋|サイゼリヤ|ガスト/i,"外食"],
+    [/ライフ|イトーヨーカドー|イオン|西友|マルエツ|東急ストア|成城石井|業務スーパー|セブン|ローソン|ファミマ|ミニストップ/i,"食料品"],
+    [/薬局|ドラッグ|マツキヨ|ウエルシア|ツルハ|スギ薬局|サンドラッグ|クリニック|病院|歯科|眼科|整骨/i,"医療"],
+    [/美容院|ヘアサロン|ネイル|まつ毛|エステ/i,"美容"],
+    [/エニタイム|ANYTIME|ゴールドジム|コナミスポーツ|ルネサンス|スポーツクラブ|ジム|フィットネス|ヨガ|映画|シネマ|Nintendo|Steam|PlayStation|Xbox/i,"娯楽"],
+    [/iDeCo|イデコ|確定拠出年金|国民年金基金|小規模企業共済/i,"教育"],
+    [/Amazon|アマゾン|ZARA|ユニクロ|GU|H&M|しまむら/i,"衣服"],
+    [/本屋|書店|Kindle|セミナー|資格|語学|英会話|スクール/i,"教育"],
+    [/家賃|管理費|駐輪|UR賃貸/i,"住居"],
+  ];
+  const rulecat = d => { for(const [p,c] of RULES)if(p.test(d))return c; return null; };
+
+  const buildPrompt=(today,rows)=>`以下は「日付,店名,金額」形式のカード明細です。各行を1件としてカテゴリ分類し、JSON配列のみ返してください。
+[{"date":"YYYY-MM-DD","description":"店名","amount":整数,"category":"カテゴリ名","memo":""}]
+カテゴリ: ${Object.keys(CAT).join("、")}
+【光熱費】電力・ガス 【通信】携帯・ネット 【サブスク】定額 【交通】移動 【外食】飲食店
+【食料品】スーパー・コンビニ 【旅行】旅行先 【娯楽】趣味 【衣服】ファッション
+【医療】病院・薬 【美容】美容院 【日用品】消耗品 【住居】家賃 【教育】書籍・学習 【その他】不明
+日付不明は${today}。明細:\n${rows}`;
+
+  const callAPI = async (messages, model="claude-haiku-4-5-20251001", max_tokens=4000) => {
+    const tok = getApiKey(); if(!tok) throw new Error("APIキーが未設定です");
+    const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":tok,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model,max_tokens,messages})});
+    const d=await r.json(); if(d.error)throw new Error(d.error.message); return d;
+  };
+
+  const parseJSON = text => {
+    const s=text.replace(/```json\s*/gi,"").replace(/```\s*/g,"").trim();
+    const j=s.slice(s.indexOf("["));
+    const try_=x=>{try{return JSON.parse(x);}catch{return null;}};
+    return try_(j)||try_(j+"]")||try_(j.slice(0,j.lastIndexOf("},")+1)+"]")||try_(j.slice(0,j.lastIndexOf("}")+1)+"]")||null;
+  };
+
+  const analyze = async () => {
+    if(!uploadText.trim()&&!pendingPdf)return;
+    setAnalyzing(true); setAnalysisLog("解析開始...");
+    const today=new Date().toISOString().slice(0,10);
+    let parsed=[];
+    try {
+      if(pendingPdf){
+        setAnalysisLog("📄 PDF解析中...");
+        const d=await callAPI([{role:"user",content:[{type:"document",source:{type:"base64",media_type:"application/pdf",data:pendingPdf.base64}},{type:"text",text:buildPrompt(today,"")}]}]);
+        const text=(d.content||[]).map(b=>b.text||"").join("");
+        parsed=parseJSON(text)||[];
+      } else {
+        const lines=uploadText.split("\n").filter(l=>l.trim()&&!/^日付/.test(l));
+        const ruled=[],ai=[];
+        for(const line of lines){
+          const cols=line.split(","); if(cols.length<3)continue;
+          const amt=parseInt(cols[2].replace(/,/g,""),10); if(!amt||amt<=0)continue;
+          const cat=rulecat(cols[1].trim());
+          if(cat)ruled.push({date:cols[0].trim(),description:cols[1].trim(),amount:amt,category:cat,memo:""});
+          else ai.push(line);
+        }
+        setAnalysisLog(`⚡ ${ruled.length}件ルール判定、${ai.length}件AI解析中...`);
+        if(ai.length>0){
+          const batches=[]; for(let i=0;i<ai.length;i+=40)batches.push(ai.slice(i,i+40).join("\n"));
+          const res=await Promise.all(batches.map(async rows=>{
+            const d=await callAPI([{role:"user",content:buildPrompt(today,rows)}]);
+            const text=(d.content||[]).map(b=>b.text||"").join("");
+            setAnalysisLog(p=>p+`\n[応答]: ${text.slice(0,100)}`);
+            return parseJSON(text)||[];
+          }));
+          for(const r of res)parsed.push(...r);
+        }
+        parsed=[...ruled,...parsed];
+      }
+      const iid=`import_${Date.now()}`;
+      const withId=parsed.map((t,i)=>({...t,id:`${iid}_${i}`,importId:iid}));
+      const newTx=[...transactions,...withId].sort((a,b)=>b.date.localeCompare(a.date));
+      const lbl=[importCardName,importMonth?fmtMonth(importMonth):""].filter(Boolean).join(" / ")||(pendingPdf?pendingPdf.name:pendingFileName);
+      const cardSnap=importCardName,monthSnap=importMonth;
+      setImportCardName(""); setImportMonth("");
+      const newIm=[{id:iid,fileName:pendingPdf?pendingPdf.name:pendingFileName,label:lbl,cardName:cardSnap,targetMonth:monthSnap,importedAt:new Date().toISOString(),count:withId.length,totalAmount:withId.reduce((s,t)=>s+t.amount,0)},...imports];
+      saveTx(newTx); saveIm(newIm);
+      await syncUp(newTx,newIm,fixedItems,gistToken,gistId);
+      setAnalysisLog(`✅ ${withId.length}件を追加しました`);
+      setUploadText(""); setPendingPdf(null); setTab("list");
+    } catch(e){ setAnalysisLog(`❌ ${e.message}`); }
+    setAnalyzing(false);
+  };
+
+  const generateAdvice = async targetMonth => {
+    setAdviceLoading(true);
+    try {
+      const recentMonths=months.slice(0,4);
+      const summary=recentMonths.map(m=>{
+        const txs=transactions.filter(t=>t.date.startsWith(m));
+        const tot=txs.reduce((s,t)=>s+t.amount,0);
+        const bycat=Object.entries(txs.reduce((a,t)=>{a[t.category]=(a[t.category]||0)+t.amount;return a;},{})).sort((a,b)=>b[1]-a[1]).map(([c,v])=>`${c}:¥${v.toLocaleString()}`).join(", ");
+        return `${fmtMonth(m)} 合計¥${tot.toLocaleString()} [${bycat}]`;
+      }).join("\n");
+      const thisMonth=targetMonth||months[0]||new Date().toISOString().slice(0,7);
+      const thisTotal=transactions.filter(t=>t.date.startsWith(thisMonth)).reduce((s,t)=>s+t.amount,0);
+      const d=await callAPI([{role:"user",content:`あなたは家計改善アドバイザーです。以下の支出データを分析し、日本語で回答してください。
+【直近の支出推移】\n${summary}\n【分析対象月】${fmtMonth(thisMonth)} 合計:¥${thisTotal.toLocaleString()}
+以下のJSON形式のみで返してください:
+{"diagnosis":"今月の支出の特徴を2文で","goal":"来月の具体的な節約目標を1文で。金額と対象カテゴリを明示","actions":["アクション1","アクション2","アクション3"],"targetAmount":来月の目標合計支出額の数値}`}]);
+      const text=(d.content||[]).map(b=>b.text||"").join("").replace(/```json\s*/gi,"").replace(/```\s*/g,"").trim();
+      setAdvice({month:thisMonth,...JSON.parse(text.slice(text.indexOf("{")))});
+    } catch(e){ setAdvice({month:targetMonth,diagnosis:`分析エラー: ${e.message}`,goal:"",actions:[],targetAmount:0}); }
+    setAdviceLoading(false);
+  };
+
+  const toHan=s=>s.replace(/[Ａ-Ｚａ-ｚ０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/　/g," ");
+  const clean=s=>toHan(s).trim().replace(/[\s　]+(北海道|東京都|大阪府|京都府|[^\s]{2,3}県)[^\s]*/g,"").replace(/\s+/g," ").trim();
+  const parseAmt=s=>{const n=parseInt((s||"").toString().replace(/,|，/g,""),10);return isNaN(n)||n<=0?null:n;};
+  const EXCL=[/チャージ/,/口座振替/,/前回分/,/繰越/,/引き落とし/,/ポイント/,/キャッシュバック/,/残高/,/入金/,/振込/,/精算分/];
+  const ENGY=[/エナジー/,/エネルギー/,/東京ガス/,/東電/,/関西電力/,/中部電力/,/九州電力/,/東北電力/,/北海道電力/];
+  const excl=n=>ENGY.some(r=>r.test(n))?false:EXCL.some(r=>r.test(n));
+  const preprocess=raw=>{
+    const dl=raw.split(/\r?\n/).filter(l=>/^\d{4}[\/\-]/.test(l.trim())); if(!dl.length)return raw;
+    const rows=[];
+    for(const line of dl){
+      const cols=[]; let cur="",q=false;
+      for(const ch of line){if(ch==='"'){q=!q;continue;}if(ch===','&&!q){cols.push(cur);cur="";continue;}cur+=ch;}cols.push(cur);
+      if(cols.length<3)continue;
+      let date,name,as;
+      if(cols.length>=4&&/^\d{4}[\/\-]/.test(cols[1]?.trim())){date=cols[0].trim();name=cols[2];as=cols[3];}
+      else{date=cols[0].trim();name=cols[1];as=cols[2];}
+      const amt=parseAmt(as); if(!amt)continue;
+      const n=clean(name); if(!n||excl(n))continue;
+      rows.push(`${date.replace(/\//g,"-")},${n},${amt}`);
+    }
+    return rows.length?`日付,店名・内容,金額(円)\n${rows.join("\n")}`:raw;
+  };
+  const handleFile=file=>{
+    if(file.name.endsWith(".pdf")){
+      const r=new FileReader(); r.onload=e=>{setPendingPdf({name:file.name,base64:e.target.result.split(",")[1]});setPendingFileName(file.name);setUploadText("");setAnalysisLog(`📄「${file.name}」読込完了`);};r.readAsDataURL(file);
+    }else{
+      const decode=buf=>new Promise(res=>{
+        const go=E=>{const u=new Uint8Array(buf),d=E.detect(u);["SJIS","EUCJP","JIS"].includes(d)?res(E.codeToString(E.convert(u,{to:"UNICODE",from:d}))):res(new TextDecoder("utf-8").decode(buf));};
+        window.Encoding?go(window.Encoding):(()=>{const s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/encoding-japanese/2.1.0/encoding.min.js";s.onload=()=>go(window.Encoding);s.onerror=()=>res(new TextDecoder("utf-8",{fatal:false}).decode(buf));document.head.appendChild(s);})();
+      });
+      const r=new FileReader(); r.onload=async e=>{const raw=await decode(e.target.result),proc=preprocess(raw);setUploadText(proc);setPendingPdf(null);setPendingFileName(file.name);const n=proc.split("\n").filter(l=>l.trim()&&!/^日付/.test(l)).length;setAnalysisLog(`📋 ${n}件を検出`);};r.readAsArrayBuffer(file);
+    }
+  };
+
+  const months=[...new Set(transactions.map(t=>t.date.slice(0,7)))].sort().reverse();
+  const byMF=transactions.filter(t=>!filterMonth||t.date.startsWith(filterMonth));
+  const filtered=byMF.filter(t=>!filterCategory||t.category===filterCategory);
+  const total=byMF.reduce((s,t)=>s+t.amount,0);
+  const byCat=Object.entries(byMF.reduce((a,t)=>{a[t.category]=(a[t.category]||0)+t.amount;return a;},{})).sort((a,b)=>b[1]-a[1]);
+  const mChart=months.slice(0,6).reverse().map(m=>({m:m.slice(5),合計:transactions.filter(t=>t.date.startsWith(m)).reduce((s,t)=>s+t.amount,0)}));
+  const fmt=n=>n.toLocaleString("ja-JP");
+  const fmtMonth=m=>m?m.replace(/-(\d+)$/,(_,mo)=>`年${parseInt(mo)}月`):"";
+
+  if(loading) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:C.sub}}>読み込み中...</div>;
+
+  const NAV=[["dashboard","📊"],["list","📋"],["fixed","📌"],["upload","＋"],["settings","⚙️"]];
+  const NL={dashboard:"ダッシュボード",list:"明細",fixed:"固定費",upload:"取り込み",settings:"設定"};
+
+  return (
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontSize:14,lineHeight:1.5,paddingBottom:"calc(58px + env(safe-area-inset-bottom))"}}>
+      <header style={{position:"sticky",top:0,zIndex:100,background:C.bg,borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",height:48,padding:"0 16px",gap:12}}>
+        <span style={{fontWeight:700,fontSize:14,color:C.gold,flexShrink:0}}>家計簿</span>
+        {!apiKey&&<span style={{fontSize:11,color:C.red,flex:1}}>⚠️ APIキー未設定</span>}
+        {gistToken&&(
+          <button onClick={pullGist} disabled={syncing} style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:syncStatus==="error"?C.red:syncStatus==="ok"?"#5AE8A2":C.sub,flexShrink:0,padding:"2px 6px",borderRadius:C.r2}}>
+            {syncing?"⟳":syncStatus==="ok"?"✅":syncStatus==="error"?"❌":"☁️"} {syncMsg||"Gist"}
+          </button>
+        )}
+        <div style={{flex:1}}/>
+        <select value={filterMonth} onChange={e=>setFilterMonth(e.target.value)} style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:C.r2,color:C.text,padding:"4px 8px",fontSize:12,cursor:"pointer"}}>
+          <option value="">全期間</option>
+          {months.map(m=><option key={m} value={m}>{fmtMonth(m)}</option>)}
+        </select>
+      </header>
+
+      <main style={{maxWidth:860,margin:"0 auto",padding:"16px 12px"}}>
+
+        {tab==="dashboard"&&<>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
+            {[["合計支出",`¥${fmt(total)}`],["件数",`${byMF.length}件`],["最多",byCat[0]?`${CAT[byCat[0][0]]?.icon} ${byCat[0][0]}`:"—"]].map(([lbl,val])=>(
+              <Card key={lbl} style={{padding:"14px 16px"}}><div style={{fontSize:10,color:C.sub,marginBottom:5}}>{lbl}</div><div style={{fontSize:18,fontWeight:700,color:C.gold,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{val}</div></Card>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+            <Card>
+              <SL>月別支出</SL>
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={mChart} barSize={14}>
+                  <XAxis dataKey="m" tick={{fontSize:10,fill:C.sub}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fontSize:9,fill:C.mute}} axisLine={false} tickLine={false} tickFormatter={v=>`${Math.round(v/10000)}万`} width={28}/>
+                  <Tooltip formatter={v=>[`¥${fmt(v)}`,"支出"]} contentStyle={{background:C.surf2,border:`1px solid ${C.border}`,borderRadius:C.r2,fontSize:11,color:C.text}} cursor={{fill:C.border}}/>
+                  <Bar dataKey="合計" fill={C.gold} radius={[3,3,0,0]}/>
+                </BarChart>
+              </ResponsiveContainer>
+            </Card>
+            <Card>
+              <SL>カテゴリ内訳</SL>
+              {byCat.length>0?(
+                <ResponsiveContainer width="100%" height={160}>
+                  <PieChart>
+                    <Pie data={byCat.map(([name,value])=>({name,value}))} cx="50%" cy="50%" innerRadius={38} outerRadius={62} dataKey="value" paddingAngle={2}>
+                      {byCat.map(([name],i)=><Cell key={i} fill={CAT[name]?.color||C.sub}/>)}
+                    </Pie>
+                    <Tooltip content={({active,payload})=>{
+                      if(!active||!payload?.length)return null;
+                      const {name,value}=payload[0],info=CAT[name],pct=total>0?(value/total*100).toFixed(1):0;
+                      return <div style={{background:C.surf,border:`2px solid ${info?.color||C.border}`,borderRadius:C.r,padding:"8px 12px"}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><span>{info?.icon}</span><span style={{color:info?.color,fontWeight:700,fontSize:12}}>{name}</span></div><div style={{fontSize:15,fontWeight:700}}>¥{fmt(value)}</div><div style={{fontSize:10,color:C.sub}}>{pct}%</div></div>;
+                    }}/>
+                  </PieChart>
+                </ResponsiveContainer>
+              ):<div style={{height:160,display:"flex",alignItems:"center",justifyContent:"center",color:C.mute}}>データなし</div>}
+            </Card>
+          </div>
+          <Card style={{marginBottom:14}}>
+            <SL>カテゴリ別</SL>
+            {byCat.length===0&&<div style={{color:C.mute,padding:"20px 0",textAlign:"center"}}>明細を取り込んでください</div>}
+            {byCat.map(([cat,amt],idx)=>{const pct=total>0?(amt/total*100).toFixed(1):0,info=CAT[cat];return(
+              <div key={cat}><div style={{display:"flex",alignItems:"center",padding:"9px 0",gap:8}}>
+                <span style={{fontSize:14,width:18,textAlign:"center"}}>{info?.icon}</span>
+                <span style={{flex:"0 0 60px",fontSize:13}}>{cat}</span>
+                <div style={{flex:1,height:4,background:C.border,borderRadius:2,overflow:"hidden"}}><div style={{width:`${pct}%`,height:"100%",background:info?.color||C.sub,borderRadius:2}}/></div>
+                <span style={{fontSize:11,color:C.sub,width:32,textAlign:"right"}}>{pct}%</span>
+                <span style={{fontWeight:600,color:C.gold,width:80,textAlign:"right",fontSize:13}}>¥{fmt(amt)}</span>
+              </div>{idx<byCat.length-1&&<HR/>}</div>
+            );})}
+          </Card>
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:advice?14:0}}>
+              <SL style={{marginBottom:0}}>🤖 AIアドバイス</SL>
+              <Btn size="sm" variant="ghost" onClick={()=>generateAdvice(filterMonth||months[0])} disabled={adviceLoading||months.length===0||!apiKey}>
+                {adviceLoading?"分析中...":advice?"再分析":"分析する"}
+              </Btn>
+            </div>
+            {!apiKey&&<div style={{color:C.mute,fontSize:12,padding:"8px 0"}}>設定タブでAPIキーを設定してください</div>}
+            {apiKey&&months.length===0&&!advice&&<div style={{color:C.mute,fontSize:13,padding:"12px 0",textAlign:"center"}}>明細を取り込むと分析できます</div>}
+            {adviceLoading&&<div style={{color:C.sub,fontSize:13,padding:"12px 0"}}>⟳ 分析中...</div>}
+            {advice&&!adviceLoading&&(
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <div style={{padding:"10px 12px",background:C.bg,borderRadius:C.r2,border:`1px solid ${C.border}`,fontSize:13,lineHeight:1.7}}>{advice.diagnosis}</div>
+                {advice.goal&&<div style={{padding:"10px 12px",background:C.goldBg,borderRadius:C.r2,border:`1px solid ${C.gold}44`}}>
+                  <div style={{fontSize:10,color:C.gold,marginBottom:4,fontWeight:700}}>🎯 来月の目標</div>
+                  <div style={{fontSize:13,lineHeight:1.7}}>{advice.goal}</div>
+                  {advice.targetAmount>0&&<div style={{marginTop:6,fontSize:16,fontWeight:700,color:C.gold}}>目標: ¥{Number(advice.targetAmount).toLocaleString()}</div>}
+                </div>}
+                {advice.actions?.length>0&&<div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {advice.actions.map((a,i)=><div key={i} style={{display:"flex",gap:8,padding:"8px 10px",background:C.bg,borderRadius:C.r2,border:`1px solid ${C.border}`,fontSize:13}}><span style={{color:C.gold,fontWeight:700,flexShrink:0}}>{i+1}</span><span>{a}</span></div>)}
+                </div>}
+              </div>
+            )}
+          </Card>
+        </>}
+
+        {tab==="list"&&(
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <SL style={{marginBottom:0}}>取引明細</SL>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                {confirmDeleteAll&&<span style={{fontSize:11,color:C.red}}>全削除しますか？</span>}
+                <Btn size="sm" variant={confirmDeleteAll?"dangerFill":"ghost"} onClick={delAll}>{confirmDeleteAll?"はい、全削除":"全削除"}</Btn>
+                {confirmDeleteAll&&<Btn size="sm" variant="ghost" onClick={()=>setConfirmDeleteAll(false)}>✕</Btn>}
+              </div>
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:5,padding:"8px 10px",background:C.bg,borderRadius:C.r2,border:`1px solid ${C.border}`,marginBottom:12}}>
+              <Chip active={filterCategory===""} onClick={()=>setFilterCategory("")}>すべて({byMF.length})</Chip>
+              {Object.entries(CAT).filter(([c])=>byMF.some(t=>t.category===c)).map(([c,info])=>{
+                const n=byMF.filter(t=>t.category===c).length;
+                return <Chip key={c} active={filterCategory===c} color={info.color} onClick={()=>setFilterCategory(filterCategory===c?"":c)}>{info.icon}{c}({n})</Chip>;
+              })}
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.sub,marginBottom:10}}>
+              <span>{filtered.length}件</span><span>合計 <strong style={{color:C.gold}}>¥{fmt(filtered.reduce((s,t)=>s+t.amount,0))}</strong></span>
+            </div>
+            {filtered.length===0&&<div style={{color:C.mute,padding:"32px 0",textAlign:"center"}}>該当なし</div>}
+            {filtered.map((t,idx)=>(
+              <div key={t.id}>
+                <div style={{display:"grid",gridTemplateColumns:"80px 1fr 100px 76px",gap:6,padding:"9px 0",alignItems:"center"}}>
+                  <span style={{color:C.sub,fontSize:11}}>{t.date}</span>
+                  <span style={{fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.description}</span>
+                  <select value={t.category} onChange={e=>editCat(t.id,e.target.value)} style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:C.r2,color:C.text,padding:"3px 6px",fontSize:10,cursor:"pointer"}}>
+                    {Object.keys(CAT).map(c=><option key={c} value={c}>{CAT[c].icon} {c}</option>)}
+                  </select>
+                  <div style={{textAlign:"right"}}><div style={{fontWeight:600,color:C.gold,fontSize:12}}>¥{fmt(t.amount)}</div><button onClick={()=>delOne(t.id)} style={{background:"none",border:"none",color:C.mute,cursor:"pointer",fontSize:10,padding:0}}>削除</button></div>
+                </div>
+                {idx<filtered.length-1&&<HR/>}
+              </div>
+            ))}
+          </Card>
+        )}
+
+        {tab==="fixed"&&(()=>{
+          const toggleSel=id=>setFixedSelIds(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+          const alreadyReg=id=>transactions.some(t=>t.id.startsWith(`fixed_${id}_${fixedRegMonth}`));
+          const validSel=fixedSelIds.filter(id=>fixedItems.some(f=>f.id===id));
+          const pendingIds=validSel.filter(id=>!alreadyReg(id));
+          return(
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <Card>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                  <SL style={{marginBottom:0}}>口座振替を登録</SL>
+                  <select value={fixedRegMonth} onChange={e=>setFixedRegMonth(e.target.value)} style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:C.r2,color:C.text,padding:"4px 8px",fontSize:12,cursor:"pointer"}}>
+                    {Array.from({length:13},(_,i)=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-i);return d.toISOString().slice(0,7);}).map(m=><option key={m} value={m}>{fmtMonth(m)}</option>)}
+                  </select>
+                </div>
+                {fixedItems.length===0?<div style={{color:C.mute,padding:"20px 0",textAlign:"center",fontSize:13}}>下のテンプレートから追加してください</div>:<>
+                  {fixedItems.map(f=>{const done=alreadyReg(f.id),info=CAT[f.category];return(
+                    <div key={f.id} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 0",borderBottom:`1px solid ${C.border}`,opacity:done?0.45:1}}>
+                      <input type="checkbox" checked={validSel.includes(f.id)&&!done} disabled={done} onChange={()=>toggleSel(f.id)} style={{width:15,height:15,accentColor:C.gold,flexShrink:0}}/>
+                      <span style={{fontSize:14,width:18}}>{info?.icon}</span>
+                      <div style={{flex:1}}><div style={{fontSize:13,fontWeight:500}}>{f.name}</div><div style={{fontSize:10,color:C.sub}}>{f.category} 毎月{f.day}日</div></div>
+                      <input type="number" value={fixedAmtOvr[f.id]??f.amount} onChange={e=>setFixedAmtOvr(p=>({...p,[f.id]:e.target.value}))} disabled={done} style={{width:80,background:C.bg,border:`1px solid ${C.border}`,borderRadius:C.r2,color:C.gold,padding:"3px 6px",fontSize:12,fontWeight:600,textAlign:"right"}}/>
+                      {done&&<span style={{fontSize:10,color:C.sub,flexShrink:0}}>✅</span>}
+                    </div>
+                  );})}
+                  <div style={{marginTop:14,display:"flex",justifyContent:"flex-end",gap:8,alignItems:"center"}}>
+                    {fixedRegConfirm&&<span style={{fontSize:11,color:C.sub}}>{pendingIds.length}件を追加</span>}
+                    {fixedRegConfirm?<><Btn onClick={async()=>{const n=await regFixed(pendingIds);setFixedRegConfirm(false);if(n)alert(`✅ ${n}件登録`);}}>追加する</Btn><Btn variant="ghost" onClick={()=>setFixedRegConfirm(false)}>✕</Btn></>:<Btn onClick={()=>setFixedRegConfirm(true)} disabled={pendingIds.length===0}>{fmtMonth(fixedRegMonth)}に追加</Btn>}
+                  </div>
+                </>}
+              </Card>
+              <Card>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                  <SL style={{marginBottom:0}}>固定費テンプレート</SL>
+                  {!showFixedForm&&<Btn size="sm" variant="ghost" onClick={()=>{setShowFixedForm(true);setEditingFixed(null);setFixedForm({name:"",amount:"",category:"住居",day:"27",memo:""});}}>＋ 追加</Btn>}
+                </div>
+                {showFixedForm&&(
+                  <div style={{background:C.bg,borderRadius:C.r2,border:`1px solid ${C.border}`,padding:12,marginBottom:12}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                      <div><div style={{fontSize:10,color:C.sub,marginBottom:3}}>名称</div><TI value={fixedForm.name} onChange={e=>setFixedForm(p=>({...p,name:e.target.value}))} placeholder="例：家賃"/></div>
+                      <div><div style={{fontSize:10,color:C.sub,marginBottom:3}}>金額</div><TI type="number" value={fixedForm.amount} onChange={e=>setFixedForm(p=>({...p,amount:e.target.value}))} placeholder="80000"/></div>
+                      <div><div style={{fontSize:10,color:C.sub,marginBottom:3}}>カテゴリ</div>
+                        <select value={fixedForm.category} onChange={e=>setFixedForm(p=>({...p,category:e.target.value}))} style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:C.r2,color:C.text,padding:"7px 8px",fontSize:12,width:"100%",cursor:"pointer"}}>
+                          {Object.keys(CAT).map(c=><option key={c} value={c}>{CAT[c].icon} {c}</option>)}
+                        </select>
+                      </div>
+                      <div><div style={{fontSize:10,color:C.sub,marginBottom:3}}>引落日</div>
+                        <select value={fixedForm.day} onChange={e=>setFixedForm(p=>({...p,day:e.target.value}))} style={{background:C.surf,border:`1px solid ${C.border}`,borderRadius:C.r2,color:C.text,padding:"7px 8px",fontSize:12,width:"100%",cursor:"pointer"}}>
+                          {[...Array(28)].map((_,i)=><option key={i+1} value={String(i+1)}>毎月{i+1}日</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{marginBottom:8}}><div style={{fontSize:10,color:C.sub,marginBottom:3}}>メモ</div><TI value={fixedForm.memo} onChange={e=>setFixedForm(p=>({...p,memo:e.target.value}))} placeholder="例：〇〇マンション"/></div>
+                    <div style={{display:"flex",gap:8}}><Btn size="sm" onClick={submitFixed} disabled={!fixedForm.name.trim()||!fixedForm.amount}>{editingFixed?"更新":"登録"}</Btn><Btn size="sm" variant="ghost" onClick={()=>{setShowFixedForm(false);setEditingFixed(null);}}>キャンセル</Btn></div>
+                  </div>
+                )}
+                {fixedItems.length===0&&!showFixedForm&&<div style={{color:C.mute,padding:"16px 0",textAlign:"center",fontSize:13}}>テンプレートがありません</div>}
+                {fixedItems.map((f,idx)=>{const info=CAT[f.category];return(
+                  <div key={f.id}><div style={{display:"flex",alignItems:"center",gap:8,padding:"9px 0"}}>
+                    <span style={{fontSize:14,width:18}}>{info?.icon}</span>
+                    <div style={{flex:1}}><div style={{fontSize:13,fontWeight:500}}>{f.name}</div><div style={{fontSize:10,color:C.sub}}>{f.category} 毎月{f.day}日{f.memo&&` ${f.memo}`}</div></div>
+                    <span style={{fontWeight:600,color:C.gold,fontSize:12}}>¥{Number(f.amount).toLocaleString()}</span>
+                    <button onClick={()=>{setEditingFixed(f.id);setFixedForm({name:f.name,amount:String(f.amount),category:f.category,day:f.day,memo:f.memo||""});setShowFixedForm(true);}} style={{background:"none",border:"none",color:C.sub,cursor:"pointer",fontSize:12,padding:"2px 4px"}}>✏️</button>
+                    <button onClick={()=>delFixed(f.id)} style={{background:"none",border:"none",color:C.mute,cursor:"pointer",fontSize:12,padding:"2px 4px"}}>🗑</button>
+                  </div>{idx<fixedItems.length-1&&<HR/>}</div>
+                );})}
+              </Card>
+            </div>
+          );
+        })()}
+
+        {tab==="upload"&&(()=>{
+          const dup=importCardName&&importMonth&&imports.some(i=>i.cardName===importCardName&&i.targetMonth===importMonth);
+          const knownCards=[...new Set(imports.map(i=>i.cardName).filter(Boolean))];
+          const monthOpts=Array.from({length:13},(_,i)=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-i);return d.toISOString().slice(0,7);});
+          const SITES=[{name:"AMEX",url:"https://www.americanexpress.com/ja-jp/account/login",color:"#4A90D9",logo:"🔵"},{name:"三井住友",url:"https://www.smbc-card.com/mem/index.jsp",color:"#1A6B3C",logo:"🟢"},{name:"楽天",url:"https://www.rakuten-card.co.jp/e-navi/",color:"#CC0000",logo:"🔴"}];
+          return(
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <Card>
+                <SL>クレカサイトへアクセス</SL>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+                  {SITES.map(s=><a key={s.name} href={s.url} target="_blank" rel="noopener noreferrer" onClick={()=>setImportCardName(s.name)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,padding:"12px 8px",borderRadius:C.r,border:`1px solid ${C.border}`,background:C.bg,textDecoration:"none"}}>
+                    <span style={{fontSize:20}}>{s.logo}</span>
+                    <div style={{textAlign:"center"}}><div style={{fontSize:11,fontWeight:600,color:C.text}}>{s.name}</div><div style={{fontSize:9,color:C.sub}}>明細をDL</div></div>
+                  </a>)}
+                </div>
+              </Card>
+              <Card>
+                <SL>Step 1　カード会社 <span style={{textTransform:"none",letterSpacing:0,color:C.mute}}>任意</span></SL>
+                <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+                  {knownCards.map(c=><Chip key={c} active={importCardName===c} onClick={()=>setImportCardName(importCardName===c?"":c)}>💳 {c}</Chip>)}
+                  {!addingCard?<Chip dashed onClick={()=>setAddingCard(true)}>＋ 追加</Chip>
+                    :<div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <TI autoFocus value={newCardInput} onChange={e=>setNewCardInput(e.target.value)} placeholder="楽天カード" style={{width:150}}
+                        onKeyDown={e=>{if(e.key==="Enter"&&newCardInput.trim()){setImportCardName(newCardInput.trim());setAddingCard(false);setNewCardInput("");}if(e.key==="Escape"){setAddingCard(false);setNewCardInput("");}}}/>
+                      <Btn size="sm" onClick={()=>{if(newCardInput.trim())setImportCardName(newCardInput.trim());setAddingCard(false);setNewCardInput("");}}>決定</Btn>
+                      <Btn size="sm" variant="ghost" onClick={()=>{setAddingCard(false);setNewCardInput("");}}>✕</Btn>
+                    </div>}
+                </div>
+              </Card>
+              <Card>
+                <SL>Step 2　対象月 <span style={{textTransform:"none",letterSpacing:0,color:C.mute}}>任意</span></SL>
+                <div style={{display:"flex",flexWrap:"wrap",gap:7}}>{monthOpts.map(m=><Chip key={m} active={importMonth===m} onClick={()=>setImportMonth(importMonth===m?"":m)}>{fmtMonth(m)}</Chip>)}</div>
+              </Card>
+              {(importCardName||importMonth)&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",borderRadius:C.r2,background:C.goldBg,border:`1px solid ${C.gold}44`,fontSize:12,color:C.gold}}>
+                <span>📌 {[importCardName,fmtMonth(importMonth)].filter(Boolean).join(" / ")}</span>
+                <button onClick={()=>{setImportCardName("");setImportMonth("");}} style={{background:"none",border:"none",color:C.sub,cursor:"pointer",fontSize:12}}>✕</button>
+              </div>}
+              {dup&&<div style={{padding:"8px 12px",borderRadius:C.r2,background:"#2A2000",border:`1px solid ${C.gold}44`,fontSize:12,color:C.gold}}>⚠️ <strong>{importCardName} / {fmtMonth(importMonth)}</strong> は取り込み済みです。重複に注意。</div>}
+              <Card>
+                <SL>Step 3　ファイルまたはテキスト</SL>
+                <div onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)}
+                  onDrop={e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files[0];if(f)handleFile(f);}} onClick={()=>fileRef.current.click()}
+                  style={{border:`2px dashed ${dragOver?C.gold:C.border2}`,borderRadius:C.r,padding:"20px",textAlign:"center",cursor:"pointer",marginBottom:10,background:dragOver?C.goldBg:"transparent"}}>
+                  <div style={{fontSize:22,marginBottom:4}}>{pendingPdf?"📕":"📄"}</div>
+                  {pendingPdf?<div style={{color:C.gold,fontWeight:600,fontSize:12}}>{pendingPdf.name}</div>:<div style={{color:C.sub,fontSize:12}}>CSV / PDF をドロップまたはタップ</div>}
+                  <div style={{color:C.mute,fontSize:10,marginTop:3}}>.csv .txt .pdf 対応</div>
+                  <input ref={fileRef} type="file" accept=".csv,.txt,.pdf" style={{display:"none"}} onChange={e=>{if(e.target.files[0])handleFile(e.target.files[0]);}}/>
+                </div>
+                {pendingPdf&&<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}><span style={{fontSize:11,color:C.sub}}>PDFモード</span><Btn size="sm" variant="ghost" onClick={()=>{setPendingPdf(null);setAnalysisLog("");}}>✕ 取消</Btn></div>}
+                <textarea value={uploadText} onChange={e=>{if(!pendingPdf)setUploadText(e.target.value);}} readOnly={!!pendingPdf}
+                  placeholder={"2024/12/01,スーパーABC,3240\n2024/12/03,アマゾン,4980"}
+                  style={{width:"100%",minHeight:120,background:C.bg,border:`1px solid ${C.border}`,borderRadius:C.r2,color:C.text,padding:10,fontSize:12,fontFamily:"monospace",resize:"vertical",boxSizing:"border-box",opacity:pendingPdf?0.3:1}}/>
+                <div style={{display:"flex",gap:8,marginTop:10}}>
+                  <Btn onClick={analyze} disabled={analyzing||(!uploadText.trim()&&!pendingPdf)||!apiKey}>{analyzing?"解析中...":"🤖 Claude で解析"}</Btn>
+                  <Btn variant="ghost" onClick={()=>{setUploadText("");setPendingPdf(null);setAnalysisLog("");setImportCardName("");setImportMonth("");}}>クリア</Btn>
+                </div>
+                {!apiKey&&<div style={{marginTop:8,fontSize:12,color:C.red}}>⚠️ 設定タブでAPIキーを設定してください</div>}
+                {analysisLog&&<div style={{marginTop:10,padding:"8px 10px",borderRadius:C.r2,background:C.bg,border:`1px solid ${C.border}`,fontSize:11,color:C.sub,fontFamily:"monospace",whiteSpace:"pre-wrap",maxHeight:140,overflowY:"auto"}}>{analysisLog}</div>}
+              </Card>
+            </div>
+          );
+        })()}
+
+        {tab==="settings"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Card>
+              <SL>🔑 Claude APIキー</SL>
+              {apiKey?(
+                <div>
+                  <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:C.bg,borderRadius:C.r2,border:`1px solid ${"#5AE8A2"}44`,marginBottom:12}}>
+                    <span>✅</span><div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:"#5AE8A2"}}>APIキー設定済み</div><div style={{fontSize:11,color:C.sub}}>{apiKey.slice(0,12)}...</div></div>
+                    <Btn size="sm" variant="danger" onClick={()=>{setApiKey("");LS.del("kk_ak");}}>削除</Btn>
+                  </div>
+                  <div style={{fontSize:11,color:C.mute,lineHeight:1.8,padding:"8px 10px",background:C.bg,borderRadius:C.r2,border:`1px solid ${C.border}`}}>APIキーはこのブラウザのlocalStorageに保存されます。共有デバイスでのご利用はお控えください。</div>
+                </div>
+              ):(
+                <div>
+                  <div style={{fontSize:13,color:C.sub,marginBottom:10,lineHeight:1.7}}>Claude APIキーを設定するとCSV解析・AIアドバイスが使えます。<br/>取得: <a href="https://console.anthropic.com" target="_blank" style={{color:C.gold}}>console.anthropic.com</a></div>
+                  <div style={{display:"flex",gap:8}}>
+                    <TI type="password" value={apiKeyInput} onChange={e=>setApiKeyInput(e.target.value)} placeholder="sk-ant-..." style={{flex:1}} onKeyDown={e=>e.key==="Enter"&&saveApiKey()}/>
+                    <Btn onClick={saveApiKey} disabled={!apiKeyInput.trim()}>保存</Btn>
+                  </div>
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <SL>☁️ Gist自動同期</SL>
+              {gistToken?(
+                <div>
+                  <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:C.bg,borderRadius:C.r2,border:`1px solid ${"#5AE8A2"}44`,marginBottom:12}}>
+                    <span>✅</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:600,color:"#5AE8A2"}}>同期設定済み</div>
+                      <div style={{fontSize:11,color:C.sub}}>Gist ID: {gistId.slice(0,12)}...</div>
+                      {lastSynced&&<div style={{fontSize:11,color:C.sub}}>最終同期: {lastSynced.toLocaleString("ja-JP")}</div>}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+                    <Btn variant="ghost" onClick={pullGist} disabled={syncing}>⬇️ 今すぐ取得</Btn>
+                    <Btn variant="ghost" onClick={()=>syncUp(transactions,imports,fixedItems,gistToken,gistId)}>⬆️ 今すぐ送信</Btn>
+                    <Btn variant="danger" size="sm" onClick={disconnectGist}>接続を解除</Btn>
+                  </div>
+                  {syncMsg&&<div style={{fontSize:12,color:syncStatus==="error"?C.red:"#5AE8A2"}}>{syncMsg}</div>}
+                  <div style={{marginTop:10,padding:"10px 12px",background:C.bg,borderRadius:C.r2,border:`1px solid ${C.border}`,fontSize:11,color:C.mute,lineHeight:1.8}}>
+                    💡 スマホでも同じトークンを入力すれば自動同期されます
+                  </div>
+                </div>
+              ):(
+                <div>
+                  <div style={{fontSize:13,color:C.sub,marginBottom:10,lineHeight:1.7}}>GitHubのPersonal Access Token（gistスコープ）を入力すると、PCとスマホが自動同期されます。</div>
+                  <div style={{marginBottom:8}}><TI type="password" value={gistTokenInput} onChange={e=>setGistTokenInput(e.target.value)} placeholder="ghp_xxxxxxxxxxxx" onKeyDown={e=>e.key==="Enter"&&setupGist()}/></div>
+                  <Btn onClick={setupGist} disabled={!gistTokenInput.trim()||syncing}>{syncing?"設定中...":"Gist同期を設定する"}</Btn>
+                  {syncMsg&&<div style={{marginTop:8,fontSize:12,color:syncStatus==="error"?C.red:"#5AE8A2"}}>{syncMsg}</div>}
+                  <div style={{marginTop:10,padding:"10px 12px",background:C.bg,borderRadius:C.r2,border:`1px solid ${C.border}`,fontSize:11,color:C.mute,lineHeight:1.8}}>
+                    トークン作成: <a href="https://github.com/settings/tokens/new" target="_blank" style={{color:C.gold}}>github.com/settings/tokens/new</a><br/>
+                    Expiration: No expiration　|　Scope: gist ✅
+                  </div>
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <SL>データ管理</SL>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+                <button onClick={exportData} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,padding:"16px",borderRadius:C.r,border:`1px solid ${C.border}`,background:C.bg,cursor:"pointer"}}>
+                  <span style={{fontSize:22}}>📤</span><div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:600,color:C.text}}>エクスポート</div><div style={{fontSize:10,color:C.sub}}>JSONで書き出す</div></div>
+                </button>
+                <button onClick={()=>importRef.current.click()} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,padding:"16px",borderRadius:C.r,border:`1px solid ${C.border}`,background:C.bg,cursor:"pointer"}}>
+                  <span style={{fontSize:22}}>📥</span><div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:600,color:C.text}}>インポート</div><div style={{fontSize:10,color:C.sub}}>JSONを読み込む</div></div>
+                </button>
+              </div>
+              <input ref={importRef} type="file" accept=".json" style={{display:"none"}} onChange={e=>{if(e.target.files[0]){importData(e.target.files[0]);e.target.value="";}}}/>
+            </Card>
+
+            <Card>
+              <SL>取り込み履歴（{imports.length}件）</SL>
+              {imports.length===0?<div style={{color:C.mute,padding:"20px 0",textAlign:"center"}}>まだ取り込みがありません</div>
+                :imports.map((imp,idx)=>(
+                <div key={imp.id}>
+                  <div style={{padding:"12px 0"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                      {editingImportId===imp.id
+                        ?<><TI autoFocus value={editingLabel} onChange={e=>setEditingLabel(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveLabel(imp.id);if(e.key==="Escape")setEditingImportId(null);}} style={{flex:1,fontSize:12}}/><Btn size="sm" onClick={()=>saveLabel(imp.id)}>保存</Btn><Btn size="sm" variant="ghost" onClick={()=>setEditingImportId(null)}>✕</Btn></>
+                        :<><span style={{fontSize:13,fontWeight:500,flex:1}}>📄 {imp.label||imp.fileName}</span><button onClick={()=>{setEditingImportId(imp.id);setEditingLabel(imp.label||imp.fileName);}} style={{background:"none",border:"none",color:C.sub,cursor:"pointer",fontSize:11}}>✏️</button></>
+                      }
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
+                      <div style={{display:"flex",gap:10,fontSize:10,color:C.sub,flexWrap:"wrap"}}>
+                        <span>{new Date(imp.importedAt).toLocaleString("ja-JP")}</span>
+                        <span>{imp.count}件</span><span style={{color:C.gold}}>¥{imp.totalAmount.toLocaleString()}</span>
+                        {imp.cardName&&<span>💳{imp.cardName}</span>}{imp.targetMonth&&<span>📅{fmtMonth(imp.targetMonth)}</span>}
+                      </div>
+                      <div style={{display:"flex",gap:6}}>
+                        {confirmImportId===imp.id?<><Btn size="sm" variant="dangerFill" onClick={()=>{delImport(imp.id);setConfirmImportId(null);}}>削除する</Btn><Btn size="sm" variant="ghost" onClick={()=>setConfirmImportId(null)}>✕</Btn></>:<Btn size="sm" variant="danger" onClick={()=>setConfirmImportId(imp.id)}>削除</Btn>}
+                      </div>
+                    </div>
+                  </div>
+                  {idx<imports.length-1&&<HR/>}
+                </div>
+              ))}
+            </Card>
+          </div>
+        )}
+      </main>
+
+      <nav style={{position:"fixed",bottom:0,left:0,right:0,background:C.surf,borderTop:`1px solid ${C.border}`,display:"flex",zIndex:100,height:58,paddingBottom:"env(safe-area-inset-bottom)"}}>
+        {NAV.map(([id,icon])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,border:"none",background:"none",cursor:"pointer",color:tab===id?C.gold:C.sub}}>
+            <span style={{fontSize:18}}>{icon}</span>
+            <span style={{fontSize:9,fontWeight:tab===id?700:400}}>{NL[id]}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Kakeibo/>);
+</script>
+</body>
+</html>
