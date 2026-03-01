@@ -292,10 +292,12 @@ function Kakeibo() {
       const cardSnap=importCardName,monthSnap=importMonth;
       setImportCardName(""); setImportMonth("");
       const newIm=[{id:iid,fileName:pendingPdf?pendingPdf.name:pendingFileName,label:lbl,cardName:cardSnap,targetMonth:monthSnap,importedAt:new Date().toISOString(),count:withId.length,totalAmount:withId.reduce((s,t)=>s+t.amount,0)},...imports];
-      saveTx(newTx); saveIm(newIm);
+      LS.set("kk_tx",newTx); LS.set("kk_im",newIm);
+      setTransactions(newTx); setImports(newIm);
       await syncUp(newTx,newIm,fixedItems,gistToken,gistId);
       setAnalysisLog(`✅ ${withId.length}件を追加しました`);
-      setUploadText(""); setPendingPdf(null); setTab("list");
+      setUploadText(""); setPendingPdf(null);
+      setTimeout(()=>setTab("list"),300);
     } catch(e){ setAnalysisLog(`❌ ${e.message}`); }
     setAnalyzing(false);
   };
