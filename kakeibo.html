@@ -330,19 +330,29 @@ function Kakeibo() {
   const EXCL=[/チャージ/,/口座振替/,/前回分/,/繰越/,/引き落とし/,/ポイント/,/キャッシュバック/,/残高/,/入金/,/振込/,/精算分/];
   const ENGY=[/エナジー/,/エネルギー/,/東京ガス/,/東電/,/関西電力/,/中部電力/,/九州電力/,/東北電力/,/北海道電力/];
   const excl=n=>ENGY.some(r=>r.test(n))?false:EXCL.some(r=>r.test(n));
+  const parseCols=line=>{const cols=[];let cur="",q=false;for(const ch of line){if(ch==='"'){q=!q;continue;}if(ch===','&&!q){cols.push(cur.trim());cur="";continue;}cur+=ch;}cols.push(cur.trim());return cols;};
   const preprocess=raw=>{
-    const dl=raw.split(/\r?\n/).filter(l=>/^\d{4}[\/\-]/.test(l.trim())); if(!dl.length)return raw;
+    raw=raw.replace(/^\uFEFF/,"");
+    const lines=raw.split(/\r?\n/);
+    // ヘッダー行から列インデックスを自動判定
+    let dateCol=0,nameCol=1,amtCol=2;
+    const hi=lines.findIndex(l=>/利用日|date|日付/i.test(l));
+    if(hi>=0){
+      const hc=parseCols(lines[hi]);
+      const ai=hc.findIndex(h=>/利用金額$|^金額|amount/i.test(h));
+      const ni=hc.findIndex(h=>/店名|商品名|内容|name|description/i.test(h));
+      if(ai>=0)amtCol=ai;
+      if(ni>=0)nameCol=ni;
+    }
+    const dl=lines.filter(l=>/^"?\d{4}[\/\-]/.test(l.trim()));
+    if(!dl.length)return raw;
     const rows=[];
     for(const line of dl){
-      const cols=[]; let cur="",q=false;
-      for(const ch of line){if(ch==='"'){q=!q;continue;}if(ch===','&&!q){cols.push(cur);cur="";continue;}cur+=ch;}cols.push(cur);
-      if(cols.length<3)continue;
-      let date,name,as;
-      if(cols.length>=4&&/^\d{4}[\/\-]/.test(cols[1]?.trim())){date=cols[0].trim();name=cols[2];as=cols[3];}
-      else{date=cols[0].trim();name=cols[1];as=cols[2];}
-      const amt=parseAmt(as); if(!amt)continue;
-      const n=clean(name); if(!n||excl(n))continue;
-      rows.push(`${date.replace(/\//g,"-")},${n},${amt}`);
+      const cols=parseCols(line);
+      if(cols.length<=Math.max(dateCol,nameCol,amtCol))continue;
+      const amt=parseAmt(cols[amtCol]); if(!amt)continue;
+      const n=clean(cols[nameCol]); if(!n||excl(n))continue;
+      rows.push(`${cols[dateCol].replace(/\//g,"-")},${n},${amt}`);
     }
     return rows.length?`日付,店名・内容,金額(円)\n${rows.join("\n")}`:raw;
   };
