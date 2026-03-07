@@ -116,6 +116,7 @@ function Kakeibo() {
   const [gistToken,setGistToken]             = useState("");
   const [gistId,setGistId]                   = useState("");
   const [gistTokenInput,setGistTokenInput]   = useState("");
+  const [gistIdInput,setGistIdInput]         = useState("");
   const [syncing,setSyncing]                 = useState(false);
   const [syncStatus,setSyncStatus]           = useState("");
   const [syncMsg,setSyncMsg]                 = useState("");
@@ -162,12 +163,21 @@ function Kakeibo() {
 
   const setupGist = async () => {
     const tok = gistTokenInput.trim(); if(!tok) return;
-    setSyncing(true); setSyncMsg("Gistを作成中...");
+    setSyncing(true);
     try {
-      const id = await gistCreate(tok);
+      let id = gistIdInput.trim();
+      if(id){
+        // 既存GistIDを使う（別デバイスからの接続）
+        setSyncMsg("Gistに接続中...");
+        await gistGet(tok, id); // 接続確認
+      } else {
+        // 新規Gist作成
+        setSyncMsg("Gistを作成中...");
+        id = await gistCreate(tok);
+        await gistPut(tok,id,{transactions,imports,fixedItems,version:1,updatedAt:new Date().toISOString()});
+      }
       setGistToken(tok); setGistId(id); LS.set("kk_gt",tok); LS.set("kk_gi",id);
-      await gistPut(tok,id,{transactions,imports,fixedItems,version:1,updatedAt:new Date().toISOString()});
-      setGistTokenInput(""); setLastSynced(new Date()); setSyncStatus("ok"); setSyncMsg("✅ Gist同期を設定しました！");
+      setGistTokenInput(""); setGistIdInput(""); setLastSynced(new Date()); setSyncStatus("ok"); setSyncMsg("✅ Gist同期を設定しました！");
     } catch(e){ setSyncStatus("error"); setSyncMsg(`❌ ${e.message}`); }
     setSyncing(false);
   };
@@ -694,7 +704,8 @@ function Kakeibo() {
               ):(
                 <div>
                   <div style={{fontSize:13,color:C.sub,marginBottom:10,lineHeight:1.7}}>GitHubのPersonal Access Token（gistスコープ）を入力すると、PCとスマホが自動同期されます。</div>
-                  <div style={{marginBottom:8}}><TI type="password" value={gistTokenInput} onChange={e=>setGistTokenInput(e.target.value)} placeholder="ghp_xxxxxxxxxxxx" onKeyDown={e=>e.key==="Enter"&&setupGist()}/></div>
+                  <div style={{marginBottom:8}}><div style={{fontSize:11,color:C.sub,marginBottom:4}}>GitHubトークン</div><TI type="password" value={gistTokenInput} onChange={e=>setGistTokenInput(e.target.value)} placeholder="ghp_xxxxxxxxxxxx"/></div>
+                  <div style={{marginBottom:12}}><div style={{fontSize:11,color:C.sub,marginBottom:4}}>既存のGist ID（別デバイスと同期する場合）</div><TI value={gistIdInput||""} onChange={e=>setGistIdInput(e.target.value)} placeholder="任意：既存のGist IDを入力"/></div>
                   <Btn onClick={setupGist} disabled={!gistTokenInput.trim()||syncing}>{syncing?"設定中...":"Gist同期を設定する"}</Btn>
                   {syncMsg&&<div style={{marginTop:8,fontSize:12,color:syncStatus==="error"?C.red:"#5AE8A2"}}>{syncMsg}</div>}
                   <div style={{marginTop:10,padding:"10px 12px",background:C.bg,borderRadius:C.r2,border:`1px solid ${C.border}`,fontSize:11,color:C.mute,lineHeight:1.8}}>
